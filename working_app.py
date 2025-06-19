@@ -41,7 +41,7 @@ class BankTransactionAnalyzer:
     
     def extract_transactions_from_pdf(self, uploaded_file, start_page=0, batch_size=100):
         """
-        Extract transactions from table-structured PDF pages with Account ID assignment
+        Extract ALL transactions from ALL pages with memory-efficient processing
         """
         import pdfplumber
         
@@ -58,11 +58,12 @@ class BankTransactionAnalyzer:
         try:
             with pdfplumber.open(temp_file_path) as pdf:
                 total_pages = len(pdf.pages)
-                end_page = min(start_page + batch_size, total_pages) if batch_size else total_pages
                 
                 progress_container = st.empty()
+                batch_transactions = []
                 
-                for page_num in range(start_page, end_page):
+                # Process ALL pages (not limited by batch_size parameter)
+                for page_num in range(total_pages):
                     try:
                         page = pdf.pages[page_num]
                         table = page.extract_table()
@@ -73,20 +74,32 @@ class BankTransactionAnalyzer:
                                 if row and len(row) >= 6:  # Ensure minimum columns
                                     transaction = self._parse_table_row(row, account_id, uploaded_file.name, page_num, row_idx)
                                     if transaction:
-                                        transactions.append(transaction)
+                                        batch_transactions.append(transaction)
                         
                         # Update progress
-                        progress = (page_num - start_page + 1) / (end_page - start_page)
+                        progress = (page_num + 1) / total_pages
                         progress_container.progress(progress, 
-                                                  text=f"Processing {uploaded_file.name} - Page {page_num + 1}/{total_pages}")
+                                                  text=f"Processing {uploaded_file.name} - Page {page_num + 1}/{total_pages} - {len(batch_transactions)} transactions found")
                         
-                        # Memory cleanup every 10 pages
-                        if page_num % 10 == 0:
+                        # Memory management: Process in batches and clear memory
+                        if len(batch_transactions) >= batch_size:  # Use dynamic batch size
+                            transactions.extend(batch_transactions)
+                            batch_transactions = []  # Clear batch
+                            gc.collect()  # Force garbage collection
+                        
+                        # Also clean up every 50 pages
+                        if page_num % 50 == 0 and page_num > 0:
                             gc.collect()
                             
                     except Exception as e:
                         st.warning(f"Could not process page {page_num + 1} in {uploaded_file.name}: {str(e)}")
                         continue
+                
+                # Add remaining transactions from the last batch
+                if batch_transactions:
+                    transactions.extend(batch_transactions)
+                    batch_transactions = []
+                    gc.collect()
                 
                 progress_container.empty()
                 
@@ -94,7 +107,7 @@ class BankTransactionAnalyzer:
                 self.processed_files[uploaded_file.name] = {
                     'account_id': account_id,
                     'transactions_count': len(transactions),
-                    'pages_processed': end_page - start_page
+                    'pages_processed': total_pages
                 }
                 
         except Exception as e:
@@ -108,7 +121,7 @@ class BankTransactionAnalyzer:
             except:
                 pass
         
-        st.success(f"Processed {uploaded_file.name} - Account ID: {account_id} - {len(transactions)} transactions extracted")
+        st.success(f"✅ Processed {uploaded_file.name} - Account ID: {account_id} - {len(transactions)} transactions extracted from {self.processed_files[uploaded_file.name]['pages_processed']} pages")
         return transactions
     
     def _parse_table_row(self, row, account_id, source_file, page_num, row_idx):
@@ -489,10 +502,10 @@ def main():
     )
     
     batch_size = st.sidebar.selectbox(
-        "Batch Processing Size",
-        options=[50, 100, 200, 500, 1000],
+        "Memory Management",
+        options=[500, 1000, 2000, 5000],
         index=1,
-        help="Balance between memory usage and processing speed"
+        help="Transaction batch size for memory management (higher = faster but more memory)"
     )
     
     # Initialize analyzer
