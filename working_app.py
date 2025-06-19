@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 import io
 import re
+import csv
+import pdfplumber
+import time
 
 # Configure page
 st.set_page_config(
@@ -39,90 +42,189 @@ class BankTransactionAnalyzer:
         except:
             return filename
     
-    def extract_transactions_from_pdf(self, uploaded_file, start_page=0, batch_size=100):
+    def extract_transactions_to_csv(self, uploaded_file, temp_csv_path, chunk_size=30, pause_seconds=2.0):
         """
-        Extract ALL transactions from ALL pages with memory-efficient processing
+        Extracts transactions from a PDF and writes them directly to a CSV file.
+        This function handles memory aggressively by processing in chunks and cleaning up.
+        It returns the count of transactions extracted.
         """
-        import pdfplumber
         
         account_id = self.extract_account_id_from_filename(uploaded_file.name)
-        transactions = []
         
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+        # Create temporary file for PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_pdf:
             uploaded_file.seek(0)
-            temp_file.write(uploaded_file.read())
-            temp_file_path = temp_file.name
-            self.temp_files.append(temp_file_path)
+            temp_pdf.write(uploaded_file.read())
+            temp_pdf_path = temp_pdf.name
+            self.temp_files.append(temp_pdf_path)
+        
+        csv_headers = ['transaction_id', 'account_id', 'source_file', 'datetime', 'date', 'time', 
+                      'narration', 'beneficiary', 'reference', 'debit_amount', 'credit_amount', 
+                      'balance', 'transaction_type']
+        
+        total_transactions_extracted = 0
+        total_pages = 0
+        
+        # Create containers for UI updates
+        progress_container = st.empty()
+        status_container = st.empty()
         
         try:
-            with pdfplumber.open(temp_file_path) as pdf:
+            with pdfplumber.open(temp_pdf_path) as pdf:
                 total_pages = len(pdf.pages)
+                processed_pages = 0
                 
+                # Create containers for UI updates
                 progress_container = st.empty()
-                batch_transactions = []
+                status_container = st.empty()
                 
-                # Process ALL pages (not limited by batch_size parameter)
-                for page_num in range(total_pages):
-                    try:
-                        page = pdf.pages[page_num]
-                        table = page.extract_table()
-                        
-                        if table and len(table) > 1:  # Has header and data
-                            # Process table rows (skip header)
-                            for row_idx, row in enumerate(table[1:]):
-                                if row and len(row) >= 6:  # Ensure minimum columns
-                                    transaction = self._parse_table_row(row, account_id, uploaded_file.name, page_num, row_idx)
-                                    if transaction:
-                                        batch_transactions.append(transaction)
-                        
-                        # Update progress
-                        progress = (page_num + 1) / total_pages
-                        progress_container.progress(progress, 
-                                                  text=f"Processing {uploaded_file.name} - Page {page_num + 1}/{total_pages} - {len(batch_transactions)} transactions found")
-                        
-                        # Memory management: Process in batches and clear memory
-                        if len(batch_transactions) >= batch_size:  # Use dynamic batch size
-                            transactions.extend(batch_transactions)
-                            batch_transactions = []  # Clear batch
-                            gc.collect()  # Force garbage collection
-                        
-                        # Also clean up every 50 pages
-                        if page_num % 50 == 0 and page_num > 0:
-                            gc.collect()
+                # Initialize CSV file with headers
+                with open(temp_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
+                    writer.writeheader()
+                
+                # Process in small chunks with aggressive memory management
+                for chunk_start in range(0, total_pages, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, total_pages)
+                    chunk_transactions = []
+                    
+                    chunk_number = chunk_start // chunk_size + 1
+                    total_chunks = (total_pages - 1) // chunk_size + 1
+                    status_container.info(f"Processing chunk {chunk_number}/{total_chunks} (Pages {chunk_start+1}-{chunk_end}) from '{uploaded_file.name}'")
+                    
+                    # Process pages in current chunk
+                    for page_num in range(chunk_start, chunk_end):
+                        try:
+                            page = pdf.pages[page_num]
+                            table = page.extract_table()
                             
-                    except Exception as e:
-                        st.warning(f"Could not process page {page_num + 1} in {uploaded_file.name}: {str(e)}")
-                        continue
-                
-                # Add remaining transactions from the last batch
-                if batch_transactions:
-                    transactions.extend(batch_transactions)
-                    batch_transactions = []
+                            if table and len(table) > 1:
+                                for row_idx, row in enumerate(table[1:]):
+                                    if row and len(row) >= 6:
+                                        transaction = self._parse_table_row(row, account_id, uploaded_file.name, page_num, row_idx)
+                                        if transaction:
+                                            chunk_transactions.append(transaction)
+                            
+                            # Force cleanup after each page for large files
+                            if total_pages > 50:
+                                del page
+                                del table
+                                gc.collect()
+                            
+                            processed_pages += 1
+                            progress = processed_pages / total_pages
+                            progress_container.progress(progress, 
+                                                      text=f"Page {processed_pages}/{total_pages} - {len(chunk_transactions)} transactions in current chunk")
+                            
+                        except Exception as e:
+                            st.warning(f"Could not process page {page_num + 1} from '{uploaded_file.name}': {str(e)}")
+                            continue
+                    
+                    # Write chunk to CSV immediately and clear from memory
+                    if chunk_transactions:
+                        with open(temp_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+                            writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
+                            for txn in chunk_transactions:
+                                writer.writerow(txn)
+                        total_transactions_extracted += len(chunk_transactions)
+                        status_container.success(f"Chunk {chunk_number} saved for '{uploaded_file.name}': {len(chunk_transactions)} transactions")
+                    
+                    # Aggressive memory cleanup for the chunk data
+                    del chunk_transactions
                     gc.collect()
+                    
+                    # Pause between chunks for memory recovery
+                    if chunk_end < total_pages:
+                        time.sleep(pause_seconds)
+                        status_container.info(f"Memory cleanup pause for '{uploaded_file.name}': {pause_seconds}s")
                 
-                progress_container.empty()
-                
-                # Store processed file info
-                self.processed_files[uploaded_file.name] = {
-                    'account_id': account_id,
-                    'transactions_count': len(transactions),
-                    'pages_processed': total_pages
-                }
+                progress_container.success(f"Completed extraction from '{uploaded_file.name}'! Processed {total_pages} pages, extracted {total_transactions_extracted} transactions.")
                 
         except Exception as e:
-            st.error(f"Error processing PDF {uploaded_file.name}: {str(e)}")
-        finally:
-            # Clean up temp file
-            try:
-                os.unlink(temp_file_path)
-                if temp_file_path in self.temp_files:
-                    self.temp_files.remove(temp_file_path)
-            except:
-                pass
+            st.error(f"Error processing PDF '{uploaded_file.name}': {str(e)}")
         
-        st.success(f"✅ Processed {uploaded_file.name} - Account ID: {account_id} - {len(transactions)} transactions extracted from {self.processed_files[uploaded_file.name]['pages_processed']} pages")
-        return transactions
+        finally:
+            # Cleanup temporary PDF
+            if temp_pdf_path in self.temp_files:
+                try:
+                    os.unlink(temp_pdf_path)
+                    self.temp_files.remove(temp_pdf_path)
+                except Exception as e:
+                    st.warning(f"Could not delete temporary PDF file '{temp_pdf_path}': {e}")
+        
+        # Store processed file info
+        self.processed_files[uploaded_file.name] = {
+            'account_id': account_id,
+            'transactions_count': total_transactions_extracted,
+            'pages_processed': total_pages
+        }
+        
+        return total_transactions_extracted  # Return count instead of list
+    
+    def load_transactions_from_csv(self, temp_csv_path, batch_size=1000):
+        """
+        Load transactions from CSV file in memory-efficient batches
+        """
+        all_transactions = []
+        
+        try:
+            with open(temp_csv_path, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                batch = []
+                
+                for row in reader:
+                    # Convert string values back to appropriate types
+                    row['debit_amount'] = float(row['debit_amount']) if row['debit_amount'] else 0.0
+                    row['credit_amount'] = float(row['credit_amount']) if row['credit_amount'] else 0.0
+                    row['balance'] = float(row['balance']) if row['balance'] else 0.0
+                    
+                    batch.append(row)
+                    
+                    # Process in batches to manage memory
+                    if len(batch) >= batch_size:
+                        all_transactions.extend(batch)
+                        del batch
+                        batch = []
+                        gc.collect()
+                
+                # Add remaining transactions
+                if batch:
+                    all_transactions.extend(batch)
+                    del batch
+                    gc.collect()
+            
+            # Clean up CSV file
+            os.remove(temp_csv_path)
+            
+        except Exception as e:
+            st.error(f"Error loading transactions from CSV: {str(e)}")
+            if os.path.exists(temp_csv_path):
+                os.remove(temp_csv_path)
+            return []
+        
+        return all_transactions
+    
+    def extract_transactions_from_pdf_chunked(self, uploaded_file, chunk_size=30, pause_seconds=2.0):
+        """
+        Enhanced chunked extraction that uses CSV intermediate storage
+        """
+        # Create temporary CSV file
+        temp_csv_path = f"temp_{self.extract_account_id_from_filename(uploaded_file.name)}_{int(time.time())}.csv"
+        
+        # Extract to CSV
+        transaction_count = self.extract_transactions_to_csv(uploaded_file, temp_csv_path, chunk_size, pause_seconds)
+        
+        if transaction_count > 0:
+            # Load back from CSV
+            return self.load_transactions_from_csv(temp_csv_path)
+        else:
+            return []
+    
+    def extract_transactions_from_pdf(self, uploaded_file, start_page=0, batch_size=100):
+        """
+        Legacy method - now calls the chunked version for better performance
+        """
+        return self.extract_transactions_from_pdf_chunked(uploaded_file, chunk_size=batch_size, pause_seconds=1.0)
     
     def _parse_table_row(self, row, account_id, source_file, page_num, row_idx):
         """
@@ -405,71 +507,181 @@ class BankTransactionAnalyzer:
         
         return results
     
+    def create_excel_report_with_chunked_export(self, all_transactions, results, chunk_size=1000):
+        """
+        Create Excel report using chunked export strategy for large datasets
+        Processes and exports data in chunks to prevent memory overload
+        """
+        import xlsxwriter
+        from datetime import datetime
+        
+        # Create filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"bank_analysis_report_{timestamp}.xlsx"
+        
+        # Create Excel workbook with xlsxwriter for better memory management
+        workbook = xlsxwriter.Workbook(output_filename, {'constant_memory': True})
+        
+        # Create worksheets
+        summary_sheet = workbook.add_worksheet('Summary')
+        transactions_sheet = workbook.add_worksheet('All Transactions')
+        refunds_sheet = workbook.add_worksheet('Refunds')
+        duplicates_sheet = workbook.add_worksheet('Duplicates')
+        
+        # Define formats
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D7E4BC',
+            'border': 1
+        })
+        money_format = workbook.add_format({'num_format': '₦#,##0.00'})
+        
+        try:
+            # 1. Write Summary Sheet
+            summary_sheet.write('A1', 'BANK TRANSACTION ANALYSIS SUMMARY', header_format)
+            row = 2
+            
+            # File processing summary
+            summary_sheet.write(row, 0, 'Processed Files:', header_format)
+            row += 1
+            for filename, info in self.processed_files.items():
+                summary_sheet.write(row, 0, f"File: {filename}")
+                summary_sheet.write(row, 1, f"Account ID: {info['account_id']}")
+                summary_sheet.write(row, 2, f"Transactions: {info['transactions_count']}")
+                summary_sheet.write(row, 3, f"Pages: {info['pages_processed']}")
+                row += 1
+            
+            row += 1  # Add spacing
+            
+            # Financial summary
+            summary_sheet.write(row, 0, 'Financial Summary:', header_format)
+            row += 1
+            for key, value in results['summary'].items():
+                summary_sheet.write(row, 0, key.replace('_', ' ').title())
+                if isinstance(value, float):
+                    summary_sheet.write(row, 1, value, money_format)
+                else:
+                    summary_sheet.write(row, 1, value)
+                row += 1
+            
+            # 2. Write Transactions Sheet in Chunks
+            st.info("💾 Exporting transactions data in chunks...")
+            
+            # Headers for transactions
+            headers = ['Transaction ID', 'Account ID', 'Date', 'Time', 'Narration', 
+                      'Beneficiary', 'Debit Amount', 'Credit Amount', 'Balance', 'Source File']
+            
+            for col, header in enumerate(headers):
+                transactions_sheet.write(0, col, header, header_format)
+            
+            # Write transactions in chunks
+            total_transactions = len(all_transactions)
+            processed_count = 0
+            
+            for chunk_start in range(0, total_transactions, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, total_transactions)
+                chunk_transactions = all_transactions[chunk_start:chunk_end]
+                
+                # Write chunk to Excel
+                for i, txn in enumerate(chunk_transactions):
+                    row = chunk_start + i + 1  # +1 for header row
+                    transactions_sheet.write(row, 0, txn['transaction_id'])
+                    transactions_sheet.write(row, 1, txn['account_id'])
+                    transactions_sheet.write(row, 2, txn['date'])
+                    transactions_sheet.write(row, 3, txn['time'])
+                    transactions_sheet.write(row, 4, txn['narration'])
+                    transactions_sheet.write(row, 5, txn['beneficiary'])
+                    transactions_sheet.write(row, 6, txn['debit_amount'], money_format)
+                    transactions_sheet.write(row, 7, txn['credit_amount'], money_format)
+                    transactions_sheet.write(row, 8, txn['balance'], money_format)
+                    transactions_sheet.write(row, 9, txn['source_file'])
+                
+                processed_count += len(chunk_transactions)
+                progress = processed_count / total_transactions
+                st.progress(progress, text=f"Exported {processed_count}/{total_transactions} transactions")
+                
+                # Memory cleanup after each chunk
+                gc.collect()
+            
+            # 3. Write Refunds Sheet
+            if results['refunds']:
+                refund_headers = ['Account ID', 'Amount', 'Beneficiary', 'Debit Date', 
+                                'Credit Date', 'Days to Refund', 'Source File']
+                
+                for col, header in enumerate(refund_headers):
+                    refunds_sheet.write(0, col, header, header_format)
+                
+                for i, refund in enumerate(results['refunds']):
+                    row = i + 1
+                    refunds_sheet.write(row, 0, refund['account_id'])
+                    refunds_sheet.write(row, 1, refund['amount'], money_format)
+                    refunds_sheet.write(row, 2, refund['beneficiary'])
+                    refunds_sheet.write(row, 3, refund['debit_date'])
+                    refunds_sheet.write(row, 4, refund['credit_date'])
+                    refunds_sheet.write(row, 5, refund['days_to_refund'])
+                    refunds_sheet.write(row, 6, refund.get('source_file', ''))
+            
+            # 4. Write Duplicates Sheet
+            if results['duplicates']:
+                duplicate_headers = ['Group ID', 'Account ID', 'Duplicate ID', 'Amount', 
+                                   'Date', 'Beneficiary', 'Similarity Score', 'Source File']
+                
+                for col, header in enumerate(duplicate_headers):
+                    duplicates_sheet.write(0, col, header, header_format)
+                
+                row = 1
+                for group in results['duplicates']:
+                    for txn in group['transactions']:
+                        duplicates_sheet.write(row, 0, group['group_id'])
+                        duplicates_sheet.write(row, 1, txn['account_id'])
+                        duplicates_sheet.write(row, 2, txn.get('duplicate_id', ''))
+                        duplicates_sheet.write(row, 3, txn['debit_amount'], money_format)
+                        duplicates_sheet.write(row, 4, txn['date'])
+                        duplicates_sheet.write(row, 5, txn['beneficiary'])
+                        duplicates_sheet.write(row, 6, group['similarity_score'])
+                        duplicates_sheet.write(row, 7, txn.get('source_file', ''))
+                        row += 1
+            
+            workbook.close()
+            
+            # Read file for download
+            with open(output_filename, 'rb') as f:
+                excel_data = f.read()
+            
+            # Clean up file
+            os.remove(output_filename)
+            
+            return excel_data, output_filename
+            
+        except Exception as e:
+            workbook.close()
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
+            st.error(f"Error creating Excel report: {str(e)}")
+            return None, None
+    
     def create_excel_report_with_account_tracking(self, all_transactions, results):
         """
-        Create comprehensive Excel report with MANDATORY Account ID tracking
+        Legacy method - now calls chunked export for better performance
         """
-        output = io.BytesIO()
-        
-        # Create a comprehensive text report
-        report_content = "BANK TRANSACTION ANALYSIS REPORT\n"
-        report_content += "="*60 + "\n\n"
-        
-        report_content += "PROCESSED FILES:\n"
-        report_content += "-"*20 + "\n"
-        for filename, info in self.processed_files.items():
-            report_content += f"File: {filename}\n"
-            report_content += f"  Account ID: {info['account_id']}\n"
-            report_content += f"  Transactions: {info['transactions_count']}\n"
-            report_content += f"  Pages Processed: {info['pages_processed']}\n\n"
-        
-        report_content += "FINANCIAL SUMMARY:\n"
-        report_content += "-"*20 + "\n"
-        for key, value in results['summary'].items():
-            if isinstance(value, float):
-                report_content += f"{key.replace('_', ' ').title()}: ₦{value:,.2f}\n"
-            else:
-                report_content += f"{key.replace('_', ' ').title()}: {value:,}\n"
-        
-        report_content += "\nACCOUNT BREAKDOWN:\n"
-        report_content += "-"*20 + "\n"
-        for account_id, data in results['account_summary'].items():
-            report_content += f"Account: {account_id}\n"
-            report_content += f"  Transactions: {data['transaction_count']}\n"
-            report_content += f"  Total Debits: ₦{data['total_debits']:,.2f}\n"
-            report_content += f"  Total Refunded: ₦{data['total_refunded']:,.2f}\n\n"
-        
-        if results['refunds']:
-            report_content += "REFUNDED TRANSACTIONS:\n"
-            report_content += "-"*25 + "\n"
-            for refund in results['refunds']:
-                report_content += f"Account: {refund['account_id']}\n"
-                report_content += f"Amount: ₦{refund['amount']:,.2f}\n"
-                report_content += f"Beneficiary: {refund['beneficiary']}\n"
-                report_content += f"Days to Refund: {refund['days_to_refund']}\n\n"
-        
-        if results['duplicates']:
-            report_content += "DUPLICATE TRANSACTION GROUPS:\n"
-            report_content += "-"*30 + "\n"
-            for group in results['duplicates']:
-                report_content += f"Group ID: {group['group_id']}\n"
-                report_content += f"Similarity Score: {group['similarity_score']:.1f}%\n"
-                account_ids = [t['account_id'] for t in group['transactions']]
-                report_content += f"Account IDs: {', '.join(set(account_ids))}\n"
-                for i, txn in enumerate(group['transactions']):
-                    report_content += f"  Transaction {i+1}:\n"
-                    report_content += f"    Account ID: {txn['account_id']}\n"
-                    report_content += f"    Duplicate ID: {txn.get('duplicate_id', 'N/A')}\n"
-                    report_content += f"    Amount: ₦{txn['debit_amount']:,.2f}\n"
-                    report_content += f"    Date: {txn['date']}\n"
-                    report_content += f"    Beneficiary: {txn['beneficiary']}\n"
-                report_content += "\n"
-        
-        report_content += "\nNOTE: All duplicate transactions are marked with their respective Account IDs\n"
-        report_content += "for precise tracking and reconciliation purposes.\n"
-        
-        output.write(report_content.encode('utf-8'))
-        output.seek(0)
+        excel_data, filename = self.create_excel_report_with_chunked_export(all_transactions, results)
+        if excel_data:
+            return excel_data
+        else:
+            # Fallback: create simple text report
+            output = io.BytesIO()
+            report_content = "BANK TRANSACTION ANALYSIS REPORT\n"
+            report_content += "="*60 + "\n\n"
+            
+            report_content += "FINANCIAL SUMMARY:\n"
+            for key, value in results['summary'].items():
+                if isinstance(value, float):
+                    report_content += f"{key.replace('_', ' ').title()}: ₦{value:,.2f}\n"
+                else:
+                    report_content += f"{key.replace('_', ' ').title()}: {value:,}\n"
+            
+            output.write(report_content.encode('utf-8'))
+            output.seek(0)
         
         return output
 
@@ -501,11 +713,17 @@ def main():
         help="Minimum similarity percentage for beneficiary matching"
     )
     
-    batch_size = st.sidebar.selectbox(
-        "Memory Management",
-        options=[500, 1000, 2000, 5000],
+    chunk_size = st.sidebar.selectbox(
+        "Processing Chunk Size (Pages)",
+        options=[20, 30, 50, 100],
         index=1,
-        help="Transaction batch size for memory management (higher = faster but more memory)"
+        help="Number of pages to process at once (smaller = less memory usage)"
+    )
+    
+    pause_duration = st.sidebar.slider(
+        "Pause Between Chunks (seconds)",
+        min_value=0.5, max_value=5.0, value=1.0, step=0.5,
+        help="Pause time between chunks for memory cleanup"
     )
     
     # Initialize analyzer
@@ -554,16 +772,19 @@ def main():
                 st.subheader(f"Extracting from {uploaded_file.name} ({file_idx + 1}/{total_files})")
                 
                 with st.spinner(f"Processing {uploaded_file.name}..."):
-                    transactions = analyzer.extract_transactions_from_pdf(
+                    transactions = analyzer.extract_transactions_from_pdf_chunked(
                         uploaded_file, 
-                        batch_size=batch_size
+                        chunk_size=chunk_size,
+                        pause_seconds=pause_duration
                     )
                     all_transactions.extend(transactions)
                 
                 # Show extraction summary after each file
-                st.success(f"✅ Extracted {len(transactions)} transactions from {uploaded_file.name}")
+                transaction_count = len(transactions)
+                st.success(f"✅ Extracted {transaction_count} transactions from {uploaded_file.name}")
                 
-                # Memory cleanup after each file
+                # Aggressive memory cleanup after each file
+                del transactions
                 gc.collect()
             
             st.success(f"🎉 EXTRACTION COMPLETE: {len(all_transactions)} total transactions extracted from {total_files} files")
