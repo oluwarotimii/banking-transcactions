@@ -543,20 +543,37 @@ def main():
         
         # Analysis button
         if st.button("🔍 Analyze Transactions", type="primary"):
-            with st.spinner("Processing PDF files and analyzing transactions..."):
+            # PHASE 1: COMPLETE EXTRACTION FROM ALL DOCUMENTS
+            st.header("📄 Phase 1: Extracting All Transactions")
+            st.info("Extracting all transactions from all PDF documents first...")
+            
+            all_transactions = []
+            total_files = len(uploaded_files)
+            
+            for file_idx, uploaded_file in enumerate(uploaded_files):
+                st.subheader(f"Extracting from {uploaded_file.name} ({file_idx + 1}/{total_files})")
                 
-                # Process each PDF file
-                all_transactions = []
-                for uploaded_file in uploaded_files:
-                    st.info(f"Processing: {uploaded_file.name}")
+                with st.spinner(f"Processing {uploaded_file.name}..."):
                     transactions = analyzer.extract_transactions_from_pdf(
                         uploaded_file, 
                         batch_size=batch_size
                     )
                     all_transactions.extend(transactions)
                 
-                # Perform analysis
-                st.info("Analyzing transactions for refunds and duplicates...")
+                # Show extraction summary after each file
+                st.success(f"✅ Extracted {len(transactions)} transactions from {uploaded_file.name}")
+                
+                # Memory cleanup after each file
+                gc.collect()
+            
+            st.success(f"🎉 EXTRACTION COMPLETE: {len(all_transactions)} total transactions extracted from {total_files} files")
+            
+            # PHASE 2: COMPREHENSIVE ANALYSIS OF ALL DATA
+            st.header("🔍 Phase 2: Analyzing Complete Dataset")
+            st.info("Now analyzing all extracted transactions for patterns, duplicates, and refunds...")
+            
+            with st.spinner("Performing comprehensive analysis on complete dataset..."):
+                # Perform analysis on complete dataset
                 results = analyzer.analyze_transactions(all_transactions)
                 
                 # Display results
