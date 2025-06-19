@@ -2,7 +2,7 @@ modules = ["python-3.11"]
 
 [nix]
 channel = "stable-24_05"
-packages = ["glibcLocales", "gcc-unwrapped"]
+packages = ["gcc-unwrapped", "glibcLocales"]
 
 [deployment]
 deploymentTarget = "autoscale"

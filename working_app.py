@@ -43,63 +43,174 @@ class BankTransactionAnalyzer:
         """
         Extract transactions from table-structured PDF pages with Account ID assignment
         """
-        # For now, create sample data structure to demonstrate functionality
-        # This would be replaced with actual PDF parsing logic using pdfplumber
+        import pdfplumber
         
         account_id = self.extract_account_id_from_filename(uploaded_file.name)
         transactions = []
         
-        # Simulate PDF processing
-        progress_container = st.empty()
-        progress_container.progress(0.5, text=f"Processing {uploaded_file.name}...")
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            uploaded_file.seek(0)
+            temp_file.write(uploaded_file.read())
+            temp_file_path = temp_file.name
+            self.temp_files.append(temp_file_path)
         
-        # Create sample transactions for demonstration
-        sample_transactions = [
-            {
-                'transaction_id': f"{account_id}_20250115_143500_1",
+        try:
+            with pdfplumber.open(temp_file_path) as pdf:
+                total_pages = len(pdf.pages)
+                end_page = min(start_page + batch_size, total_pages) if batch_size else total_pages
+                
+                progress_container = st.empty()
+                
+                for page_num in range(start_page, end_page):
+                    try:
+                        page = pdf.pages[page_num]
+                        table = page.extract_table()
+                        
+                        if table and len(table) > 1:  # Has header and data
+                            # Process table rows (skip header)
+                            for row_idx, row in enumerate(table[1:]):
+                                if row and len(row) >= 6:  # Ensure minimum columns
+                                    transaction = self._parse_table_row(row, account_id, uploaded_file.name, page_num, row_idx)
+                                    if transaction:
+                                        transactions.append(transaction)
+                        
+                        # Update progress
+                        progress = (page_num - start_page + 1) / (end_page - start_page)
+                        progress_container.progress(progress, 
+                                                  text=f"Processing {uploaded_file.name} - Page {page_num + 1}/{total_pages}")
+                        
+                        # Memory cleanup every 10 pages
+                        if page_num % 10 == 0:
+                            gc.collect()
+                            
+                    except Exception as e:
+                        st.warning(f"Could not process page {page_num + 1} in {uploaded_file.name}: {str(e)}")
+                        continue
+                
+                progress_container.empty()
+                
+                # Store processed file info
+                self.processed_files[uploaded_file.name] = {
+                    'account_id': account_id,
+                    'transactions_count': len(transactions),
+                    'pages_processed': end_page - start_page
+                }
+                
+        except Exception as e:
+            st.error(f"Error processing PDF {uploaded_file.name}: {str(e)}")
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_file_path)
+                if temp_file_path in self.temp_files:
+                    self.temp_files.remove(temp_file_path)
+            except:
+                pass
+        
+        st.success(f"Processed {uploaded_file.name} - Account ID: {account_id} - {len(transactions)} transactions extracted")
+        return transactions
+    
+    def _parse_table_row(self, row, account_id, source_file, page_num, row_idx):
+        """
+        Parse a single table row into transaction dictionary with Account ID
+        """
+        try:
+            # Expected columns: Date & Time, Narration, Reference, Debit, Credit, Balance
+            date_time = str(row[0] or "").strip()
+            narration = str(row[1] or "").strip()
+            reference = str(row[2] or "").strip()
+            debit = self._clean_amount(str(row[3] or "0"))
+            credit = self._clean_amount(str(row[4] or "0"))
+            balance = self._clean_amount(str(row[5] or "0"))
+            
+            if not date_time or not narration:
+                return None
+            
+            # Parse datetime
+            try:
+                dt = self._parse_datetime(date_time)
+            except:
+                return None
+            
+            # Extract beneficiary from narration
+            beneficiary = self._extract_beneficiary(narration)
+            
+            return {
+                'transaction_id': f"{account_id}_{dt.strftime('%Y%m%d_%H%M%S')}_{page_num}_{row_idx}",
                 'account_id': account_id,
-                'source_file': uploaded_file.name,
-                'datetime': datetime(2025, 1, 15, 14, 35, 0),
-                'date': '15/01/2025',
-                'time': '14:35:00',
-                'narration': 'TRANSFER TO ADESOLA OLUWAFEMI OPARINDE',
-                'beneficiary': 'ADESOLA OLUWAFEMI OPARINDE',
-                'reference': 'TXN123456789',
-                'debit_amount': 100020.00,
-                'credit_amount': 0.0,
-                'balance': 4654173.02,
-                'transaction_type': 'debit'
-            },
-            {
-                'transaction_id': f"{account_id}_20250116_143500_2",
-                'account_id': account_id,
-                'source_file': uploaded_file.name,
-                'datetime': datetime(2025, 1, 16, 14, 35, 0),
-                'date': '16/01/2025',
-                'time': '14:35:00',
-                'narration': 'REVERSAL: TRANSFER TO ADESOLA OLUWAFEMI OPARINDE',
-                'beneficiary': 'REVERSAL',
-                'reference': 'REV123456789',
-                'debit_amount': 0.0,
-                'credit_amount': 100020.00,
-                'balance': 4754193.02,
-                'transaction_type': 'credit'
+                'source_file': source_file,
+                'datetime': dt,
+                'date': dt.strftime('%d/%m/%Y'),
+                'time': dt.strftime('%H:%M:%S'),
+                'narration': narration,
+                'beneficiary': beneficiary,
+                'reference': reference,
+                'debit_amount': debit,
+                'credit_amount': credit,
+                'balance': balance,
+                'transaction_type': 'debit' if debit > 0 else 'credit'
             }
+            
+        except Exception as e:
+            return None
+    
+    def _parse_datetime(self, date_time_str):
+        """Parse various datetime formats commonly found in bank statements"""
+        formats = [
+            '%d/%m/%Y, %H:%M:%S',
+            '%d/%m/%Y %H:%M:%S',
+            '%d-%m-%Y, %H:%M:%S',
+            '%d-%m-%Y %H:%M:%S',
+            '%d/%m/%Y',
+            '%d-%m-%Y',
+            '%Y-%m-%d %H:%M:%S',
+            '%Y/%m/%d %H:%M:%S'
         ]
         
-        transactions.extend(sample_transactions)
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_time_str, fmt)
+            except:
+                continue
         
-        # Store processed file info
-        self.processed_files[uploaded_file.name] = {
-            'account_id': account_id,
-            'transactions_count': len(transactions),
-            'pages_processed': 1
-        }
+        # Try to extract date with regex as fallback
+        date_pattern = r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})'
+        time_pattern = r'(\d{1,2}):(\d{2}):(\d{2})'
         
-        progress_container.empty()
-        st.success(f"Processed {uploaded_file.name} - Account ID: {account_id} - {len(transactions)} transactions")
+        date_match = re.search(date_pattern, date_time_str)
+        time_match = re.search(time_pattern, date_time_str)
         
-        return transactions
+        if date_match:
+            day, month, year = date_match.groups()
+            if time_match:
+                hour, minute, second = time_match.groups()
+                return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+            else:
+                return datetime(int(year), int(month), int(day))
+        
+        raise ValueError(f"Cannot parse datetime: {date_time_str}")
+    
+    def _extract_beneficiary(self, narration):
+        """Extract beneficiary name from narration with improved cleaning"""
+        # Clean common prefixes and suffixes
+        cleaners = [
+            'TRANSFER TO:', 'PAYMENT TO:', 'TRF TO:', 'PAY:', 'TRANSFER', 'PAYMENT',
+            'MOBILE TRANSFER TO:', 'WEB TRANSFER TO:', 'ATM TRANSFER TO:',
+            'POS PURCHASE:', 'CARD PAYMENT:', 'ONLINE PAYMENT TO:'
+        ]
+        
+        beneficiary = narration.upper()
+        for cleaner in cleaners:
+            beneficiary = beneficiary.replace(cleaner, '').strip()
+        
+        # Remove common separators and reference info
+        beneficiary = beneficiary.split('/')[0].split('|')[0].split('REF:')[0]
+        beneficiary = beneficiary.split('TXN:')[0].split('SESSION:')[0].strip()
+        
+        # Remove extra whitespace and limit length
+        beneficiary = ' '.join(beneficiary.split())
+        return beneficiary[:50]  # Limit length for cleaner display
     
     def _clean_amount(self, amount_str):
         """Clean and convert amount string to float"""
@@ -539,17 +650,58 @@ def main():
                 with tab4:
                     st.subheader("All Processed Transactions")
                     if all_transactions:
-                        st.write(f"**Total transactions processed:** {len(all_transactions)}")
-                        for i, txn in enumerate(all_transactions[:10]):  # Show first 10
-                            with st.expander(f"Transaction {i+1} - {txn.get('account_id', 'Unknown')}"):
+                        # Count by transaction type
+                        debits = [t for t in all_transactions if t['transaction_type'] == 'debit']
+                        credits = [t for t in all_transactions if t['transaction_type'] == 'credit']
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Total Transactions", len(all_transactions))
+                        with col2:
+                            st.metric("Debits", len(debits))
+                        with col3:
+                            st.metric("Credits", len(credits))
+                        
+                        st.write("### Transaction Details")
+                        for i, txn in enumerate(all_transactions[:20]):  # Show first 20
+                            with st.expander(f"[{txn.get('source_file', 'Unknown')}] Transaction {i+1} - {txn.get('transaction_type', 'N/A').upper()}"):
+                                st.write(f"**Source File:** {txn.get('source_file', 'N/A')}")
                                 st.write(f"**Account ID:** {txn.get('account_id', 'Unknown')}")
                                 st.write(f"**Transaction Type:** {txn.get('transaction_type', 'N/A')}")
-                                st.write(f"**Amount:** ₦{txn.get('debit_amount', 0) + txn.get('credit_amount', 0):,.2f}")
+                                if txn.get('transaction_type') == 'debit':
+                                    st.write(f"**Debit Amount:** ₦{txn.get('debit_amount', 0):,.2f}")
+                                else:
+                                    st.write(f"**Credit Amount:** ₦{txn.get('credit_amount', 0):,.2f}")
                                 st.write(f"**Date:** {txn.get('date', 'N/A')} {txn.get('time', 'N/A')}")
                                 st.write(f"**Beneficiary:** {txn.get('beneficiary', 'N/A')}")
-                                st.write(f"**Source File:** {txn.get('source_file', 'N/A')}")
-                        if len(all_transactions) > 10:
-                            st.info(f"... and {len(all_transactions) - 10} more transactions")
+                                st.write(f"**Narration:** {txn.get('narration', 'N/A')}")
+                                st.write(f"**Balance:** ₦{txn.get('balance', 0):,.2f}")
+                        
+                        if len(all_transactions) > 20:
+                            st.info(f"... and {len(all_transactions) - 20} more transactions")
+                        
+                        # Show breakdown by file
+                        st.write("### Transactions by File")
+                        file_breakdown = {}
+                        for txn in all_transactions:
+                            file_name = txn.get('source_file', 'Unknown')
+                            if file_name not in file_breakdown:
+                                file_breakdown[file_name] = {'debits': 0, 'credits': 0, 'total': 0}
+                            file_breakdown[file_name]['total'] += 1
+                            if txn.get('transaction_type') == 'debit':
+                                file_breakdown[file_name]['debits'] += 1
+                            else:
+                                file_breakdown[file_name]['credits'] += 1
+                        
+                        for file_name, counts in file_breakdown.items():
+                            with st.expander(f"{file_name}: {counts['total']} transactions"):
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.write(f"**Total:** {counts['total']}")
+                                with col2:
+                                    st.write(f"**Debits:** {counts['debits']}")
+                                with col3:
+                                    st.write(f"**Credits:** {counts['credits']}")
                     else:
                         st.info("No transaction data to display")
                 
