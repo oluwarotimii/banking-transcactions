@@ -235,9 +235,15 @@ def main():
                 'Size (KB)': round(file.size / 1024, 2)
             })
         
-        import pandas as pd
-        df_files = pd.DataFrame(file_info)
-        st.dataframe(df_files, use_container_width=True)
+        # Display file info without pandas
+        for info in file_info:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.text(f"📁 {info['Filename']}")
+            with col2:
+                st.text(f"🏦 {info['Account ID']}")
+            with col3:
+                st.text(f"📏 {info['Size (KB)']} KB")
         
         # Analysis button
         if st.button("🔍 Analyze Transactions", type="primary"):
@@ -253,16 +259,8 @@ def main():
                     )
                     all_transactions.extend(transactions)
                 
-                # Convert to DataFrame
-                if all_transactions:
-                    df_transactions = pd.DataFrame(all_transactions)
-                else:
-                    # Create empty DataFrame with expected columns
-                    df_transactions = pd.DataFrame(columns=[
-                        'transaction_id', 'account_id', 'source_file', 'datetime',
-                        'date', 'time', 'narration', 'beneficiary', 'reference',
-                        'debit_amount', 'credit_amount', 'balance', 'transaction_type'
-                    ])
+                # Use list directly instead of DataFrame
+                df_transactions = all_transactions
                 
                 # Perform analysis
                 st.info("Analyzing transactions for refunds and duplicates...")
@@ -331,8 +329,13 @@ def main():
                 with tab2:
                     st.subheader("Refunded Transactions")
                     if results['refunds']:
-                        refunds_df = pd.DataFrame(results['refunds'])
-                        st.dataframe(refunds_df, use_container_width=True)
+                        st.write("Refunded transactions found:")
+                        for i, refund in enumerate(results['refunds']):
+                            with st.expander(f"Refund {i+1} - Account: {refund.get('account_id', 'Unknown')}"):
+                                st.write(f"**Amount:** ₦{refund.get('amount', 0):,.2f}")
+                                st.write(f"**Beneficiary:** {refund.get('beneficiary', 'N/A')}")
+                                st.write(f"**Debit Date:** {refund.get('debit_date', 'N/A')}")
+                                st.write(f"**Credit Date:** {refund.get('credit_date', 'N/A')}")
                     else:
                         st.info("No refunded transactions detected")
                 
@@ -342,27 +345,30 @@ def main():
                     if results['duplicates']:
                         # Display duplicate groups with Account ID emphasis
                         for i, group in enumerate(results['duplicates']):
-                            with st.expander(f"Duplicate Group {i+1} - Account IDs: {', '.join(set(t.get('account_id', 'Unknown') for t in group['transactions']))}"):
-                                group_df = pd.DataFrame(group['transactions'])
-                                # Highlight Account ID column
-                                st.dataframe(
-                                    group_df,
-                                    use_container_width=True,
-                                    column_config={
-                                        "account_id": st.column_config.TextColumn(
-                                            "Account ID",
-                                            help="Source account for this transaction",
-                                            width="medium"
-                                        )
-                                    }
-                                )
+                            account_ids = set(t.get('account_id', 'Unknown') for t in group.get('transactions', []))
+                            with st.expander(f"Duplicate Group {i+1} - Account IDs: {', '.join(account_ids)}"):
+                                for j, transaction in enumerate(group.get('transactions', [])):
+                                    st.write(f"**Transaction {j+1}:**")
+                                    st.write(f"- Account ID: **{transaction.get('account_id', 'Unknown')}**")
+                                    st.write(f"- Amount: ₦{transaction.get('debit_amount', 0):,.2f}")
+                                    st.write(f"- Beneficiary: {transaction.get('beneficiary', 'N/A')}")
+                                    st.write(f"- Date: {transaction.get('date', 'N/A')}")
+                                    st.write("---")
                     else:
                         st.info("No duplicate transactions detected")
                 
                 with tab4:
                     st.subheader("All Processed Transactions")
-                    if not df_transactions.empty:
-                        st.dataframe(df_transactions, use_container_width=True)
+                    if df_transactions:
+                        st.write(f"**Total transactions processed:** {len(df_transactions)}")
+                        for i, txn in enumerate(df_transactions[:10]):  # Show first 10
+                            with st.expander(f"Transaction {i+1} - {txn.get('account_id', 'Unknown')}"):
+                                st.write(f"**Account ID:** {txn.get('account_id', 'Unknown')}")
+                                st.write(f"**Amount:** ₦{txn.get('debit_amount', 0):,.2f}")
+                                st.write(f"**Type:** {txn.get('transaction_type', 'N/A')}")
+                                st.write(f"**Date:** {txn.get('date', 'N/A')}")
+                        if len(df_transactions) > 10:
+                            st.info(f"... and {len(df_transactions) - 10} more transactions")
                     else:
                         st.info("No transaction data to display")
                 
