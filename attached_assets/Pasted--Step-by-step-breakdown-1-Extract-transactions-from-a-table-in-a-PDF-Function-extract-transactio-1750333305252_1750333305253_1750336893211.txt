@@ -1,0 +1,173 @@
+✅ Step-by-step breakdown:
+1. Extract transactions from a table in a PDF
+Function: extract_transactions()
+
+python
+Copy
+Edit
+with pdfplumber.open(pdf_path) as pdf:
+    for page in pdf.pages[start:end]:
+        table = page.extract_table()
+It:
+
+Opens the PDF file using pdfplumber
+
+Goes through it in batches of pages
+
+Extracts tabular data from each page
+
+It assumes each page has a table like:
+
+sql
+Copy
+Edit
+Date & Time | Narration | Reference | Debit | Credit | Balance
+From each row, it creates a dictionary like:
+
+python
+Copy
+Edit
+{
+  "Date & Time": "01/01/2025, 22:11:33",
+  "Narration": "ADESOLA OLUWAFEMI OPARINDE",
+  "Reference": "...",
+  "Debit": "100020.00",
+  "Credit": "0",
+  "Balance": "4654173.02"
+}
+It also:
+
+Cleans commas
+
+Converts Debit/Credit/Balance to float
+
+Stores everything into a DataFrame
+
+2. Saves to Excel
+Function: save_to_excel()
+
+Saves all transactions in a sheet called "All Transactions"
+
+Also filters narration by keywords and makes one sheet for each keyword
+
+e.g., if keyword is "OPAY", it makes "OPAY Transactions" sheet
+
+3. Interactive CLI usage
+At the end:
+
+python
+Copy
+Edit
+start_page = int(input(...))
+max_pages_to_process = int(input(...))
+keywords = input(...).split(',')
+The user is asked:
+
+Which page to start from
+
+How many pages to process
+
+What keywords to filter by
+
+🧠 HOW TO ADAPT IT FOR YOUR NEED
+You want to:
+
+Goal	Action
+🔁 Handle multiple PDFs	Loop through all PDF files in a folder
+🆔 Assign an Account ID	Use the filename as Account ID (e.g., "GTBank_Jan" → GTB_Main)
+👤 Extract the Beneficiary Name	Parse the first word(s) from the "Narration"
+🔍 Do Refund & Duplicate Matching	After extracting, analyze using logic you defined
+📊 Export summary and grouped results	Add extra Excel sheets for duplicates, refunds, and totals
+🟩 Add Color Coding	Use xlsxwriter or openpyxl styles during Excel export
+
+✅ Example: Adapted Plan for You
+Here’s how you can repurpose this:
+
+🔁 Loop Through Multiple Files:
+python
+Copy
+Edit
+all_transactions = []
+
+for file in os.listdir("bank_statements"):
+    if file.endswith(".pdf"):
+        file_path = os.path.join("bank_statements", file)
+        print(f"Processing: {file}")
+        df = extract_transactions(file_path, start_page=1, batch_size=100)
+        df["Account ID"] = "GTBank_Main"  # or parse from filename if needed
+        df["Source File"] = file
+        all_transactions.append(df)
+
+final_df = pd.concat(all_transactions, ignore_index=True)
+👤 Extract Beneficiary:
+Add this after df = pd.DataFrame(transactions):
+
+python
+Copy
+Edit
+def extract_beneficiary(narration):
+    return narration.split("|")[0].strip()
+
+df["Beneficiary"] = df["Narration"].apply(extract_beneficiary)
+📊 Add Summary & Grouping
+Once you have final_df, pass it to a function like:
+
+python
+Copy
+Edit
+grouped_refunds, suspected_duplicates, summary = analyze_transactions(final_df)
+This function:
+
+Matches debits to future credits (refunds)
+
+Groups similar transactions by beneficiary
+
+Flags possible duplicates
+
+Calculates totals
+
+📤 Export to Excel (with multiple sheets)
+You can adapt the save_to_excel function to include:
+
+"All Transactions"
+
+"Refunded Transactions"
+
+"Unmatched Debits"
+
+"Suspected Duplicates"
+
+"Summary"
+
+Example:
+
+python
+Copy
+Edit
+with pd.ExcelWriter("final_output.xlsx", engine="xlsxwriter") as writer:
+    final_df.to_excel(writer, sheet_name="All Transactions", index=False)
+    refunds_df.to_excel(writer, sheet_name="Refunded", index=False)
+    duplicates_df.to_excel(writer, sheet_name="Duplicates", index=False)
+    summary_df.to_excel(writer, sheet_name="Summary", index=False)
+🟩 Add Color Coding (optional but recommended)
+You can highlight rows in Excel with xlsxwriter like:
+
+python
+Copy
+Edit
+workbook = writer.book
+worksheet = writer.sheets["Duplicates"]
+yellow_format = workbook.add_format({'bg_color': '#FFFACD'})
+
+for row in range(1, len(duplicates_df)+1):
+    worksheet.set_row(row, cell_format=yellow_format)
+✅ Conclusion
+This code is a good base for extracting data from table-style PDFs, and can be easily adapted to your case by:
+
+Looping through all PDFs
+
+Adding fields like Beneficiary, Account ID
+
+Creating logic to match refunds and detect retries
+
+Exporting grouped, color-coded Excel reports with summaries

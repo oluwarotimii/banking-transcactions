@@ -1,0 +1,246 @@
+
+✅ Full System Overview: Bank Transaction Analyzer
+🔍 Identify refunded, duplicate, and unmatched transactions across multiple statements from the same bank, and calculate the total financial impact.
+
+🎯 Objectives
+Your system should:
+
+🔍 Detect refunded transactions (same amount, same account, credited back later)
+
+🔁 Detect possible duplicate payments, including:
+
+Retries from same or different bank statements
+
+Slight variations in amount (₦1–₦1,000)
+
+❌ Identify unrecovered losses
+
+📊 Summarize the total impact in terms of:
+
+Total debits
+
+Total refunded
+
+Total lost to duplicate or unreversed attempts
+
+📑 Output one Excel workbook with organized sheets and color-coded transactions for clarity
+
+📥 Input
+🔹 Multiple PDF bank statements from same bank
+
+E.g. GTBank_Jan.pdf, GTBank_Feb.pdf
+
+🔸 Each file contains:
+
+Date, Time, Narration, Reference, Debit, Credit, Balance
+
+Example Transaction:
+Date	Time	Narration (Beneficiary Info)	Reference	Debit	Credit	Balance
+01/01/2025	22:11:33	ADESOLA OLUWAFEMI OPARINDE	...	100,020.00	—	4,654,173.02
+
+🧠 Core Logic Breakdown
+✅ 1. Data Extraction & Normalization
+For each PDF:
+
+Read all transactions
+
+Assign shared Account ID (e.g., GTBank_Main)
+
+Normalize data:
+
+Combine Date + Time → Timestamp
+
+Extract Beneficiary from narration
+
+Convert debit/credit to float
+
+Add:
+
+Txn ID (auto ID)
+
+Account ID
+
+Txn Type (debit or credit)
+
+All extracted transactions go into a master DataFrame.
+
+✅ 2. Refund Detection Logic
+🔁 Has the money come back?
+
+For every debit transaction:
+
+Search for a credit of exact same amount
+
+From the same account ID (across any file)
+
+With a later timestamp
+
+If found:
+
+Mark as Refunded
+
+Show both transactions side by side
+
+If not found:
+
+Mark as Unmatched Debit
+
+✅ Helps detect bank errors that were later corrected
+
+✅ 3. Duplicate / Retry Detection Logic
+⚠️ Was the MD retrying the same transaction — even on the same account — possibly with a small change in amount?
+
+Group all debits by Beneficiary
+
+Find 2+ transactions that:
+
+Happened within 3 days
+
+Have amount difference ≤ ₦1,000
+
+Belong to same account
+
+Or across files/statements
+
+Were not refunded
+
+Group them as Suspected Duplicates
+
+Assign Group ID
+
+✅ Helps detect accidental overpayments, even if the retry was on the same account
+
+✅ 4. Balance Tracking
+Every transaction carries the Balance from the original statement.
+
+We retain:
+
+Balance at time of debit
+
+Balance at time of refund (if matched)
+
+Balance at time of duplicate retry
+
+✅ Makes it easy to trace financial position at the time of the incident.
+
+✅ 5. Final Summary Calculation
+📊 What’s the total damage or recovery?
+
+Calculate:
+
+Metric	How It's Calculated
+Total Debit Volume	Sum of all debit amounts
+Total Refunded	Sum of debit amounts that were later refunded
+Total Unmatched Debits	Debits that were not refunded nor clearly matched
+Total Duplicate Amount	Sum of grouped duplicate transactions (excluding first)
+Total Net Loss Estimate	Total Duplicate Amount - Total Refunded
+
+✅ Shows how much money was:
+
+Temporarily deducted
+
+Duplicated
+
+Lost or recovered
+
+📊 Excel Output Structure
+You’ll generate a single Excel file with multiple sheets:
+
+🧾 Sheet 1: All Transactions
+| Txn ID | Date | Time | Beneficiary | Amount | Type | Account ID | Reference | Balance |
+
+All raw and cleaned data, combined from all PDFs.
+
+🟩 Sheet 2: Refunded Transactions
+| Debit Date | Beneficiary | Debit Amount | Account | Credit Date | Credit Amount | Balance (before/after) |
+
+✅ Colored green
+
+✅ Debits & matching refunds side-by-side
+
+✅ Includes balances to show when refund occurred
+
+❌ Sheet 3: Unmatched Debits
+| Txn ID | Date | Beneficiary | Amount | Account | Balance | Status: Not Refunded |
+
+Shows every debit where no refund was ever detected
+
+🔶 Sheet 4: Suspected Duplicate Payments
+| Group ID | Date | Beneficiary | Amount | Account | Txn ID | Retry Note | Balance |
+
+Includes same-account & cross-file duplicates
+
+Shows all grouped retries, amounts, and dates
+
+Highlighted in yellow
+
+Includes balance at time of each retry
+
+📈 Sheet 5: Summary of Potential Losses
+Metric	Value
+Total Transactions	2,345
+Total Refunds	₦3,000,000.00
+Total Duplicate Groups	12
+Total Duplicate Amount	₦4,850,000.00
+Estimated Net Loss	₦1,850,000.00
+
+🧠 Example Flow
+Scenario:
+
+MD tries to pay ₦500,000 to “XYZ Ltd”
+
+System fails to respond
+
+He retries with ₦500,100 on same account
+
+Bank charges both
+
+Refund never comes
+
+System Output:
+
+Both debits grouped as a Duplicate
+
+No refund found
+
+Flagged in yellow
+
+Balance shown for each
+
+Value counted in Net Loss
+
+📂 Suggested Folder Structure
+lua
+Copy
+Edit
+bank-analysis/
+│
+├── statements/
+│   ├── GTBank_Jan.pdf
+│   ├── GTBank_Feb.pdf
+│
+├── output/
+│   └── Transaction_Report.xlsx
+│
+├── scripts/
+│   ├── extract_clean.py
+│   ├── detect_refunds.py
+│   ├── detect_duplicates.py
+│   ├── build_summary.py
+│   └── export_excel.py
+✅ Final Notes
+No false positives: legitimate one-time debits are left untouched
+
+Detects:
+
+Refunded issues
+
+Retry duplicates
+
+Silent failures
+
+Clean Excel output ready for management and finance review
+
+Tracks and displays balances for transparency
+
+Helps quantify real-world financial loss
