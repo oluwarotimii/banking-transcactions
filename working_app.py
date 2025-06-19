@@ -29,35 +29,15 @@ class BankTransactionAnalyzer:
     
     def extract_account_id_from_filename(self, filename):
         """
-        Extract Account ID from PDF filename
-        Example: GTBank_Jan.pdf -> GTB_Main
+        Extract Account ID from PDF filename - use the actual filename as Account ID
+        Example: Account_Statement (30).pdf -> Account_Statement (30)
         """
         try:
-            # Remove file extension
+            # Remove file extension and use the filename directly as Account ID
             base_name = os.path.splitext(filename)[0]
-            
-            # Extract bank name and create account ID
-            if 'gtbank' in base_name.lower() or 'gtb' in base_name.lower():
-                return "GTB_Main"
-            elif 'access' in base_name.lower():
-                return "ACC_Main"
-            elif 'first' in base_name.lower():
-                return "FBN_Main"
-            elif 'zenith' in base_name.lower():
-                return "ZEN_Main"
-            elif 'uba' in base_name.lower():
-                return "UBA_Main"
-            elif 'union' in base_name.lower():
-                return "UNI_Main"
-            elif 'fidelity' in base_name.lower():
-                return "FID_Main"
-            elif 'sterling' in base_name.lower():
-                return "STL_Main"
-            else:
-                # Generic account ID based on first 3 characters
-                return f"{base_name[:3].upper()}_Main"
+            return base_name
         except:
-            return "UNK_Main"
+            return filename
     
     def extract_transactions_from_pdf(self, uploaded_file, start_page=0, batch_size=100):
         """
