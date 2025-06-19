@@ -209,12 +209,14 @@ class BankTransactionAnalyzer:
                 if similarity >= self.similarity_threshold:
                     processed_pairs.add(pair_key)
                     
+                    duplicate_id = f"DUP_{len(duplicates) + 1}_{txn1['account_id']}_{txn2['account_id']}"
                     duplicates.append({
-                        'group_id': f"DUP_{len(duplicates) + 1}",
+                        'group_id': duplicate_id,
                         'transactions': [
                             {
                                 'account_id': txn1['account_id'],  # MANDATORY Account ID
                                 'transaction_id': txn1['transaction_id'],
+                                'duplicate_id': f"{duplicate_id}_TXN1",  # Include Account ID in duplicate ID
                                 'date': txn1['date'],
                                 'time': txn1['time'],
                                 'beneficiary': txn1['beneficiary'],
@@ -225,6 +227,7 @@ class BankTransactionAnalyzer:
                             {
                                 'account_id': txn2['account_id'],  # MANDATORY Account ID
                                 'transaction_id': txn2['transaction_id'],
+                                'duplicate_id': f"{duplicate_id}_TXN2",  # Include Account ID in duplicate ID
                                 'date': txn2['date'],
                                 'time': txn2['time'],
                                 'beneficiary': txn2['beneficiary'],
@@ -332,6 +335,7 @@ class BankTransactionAnalyzer:
                 for i, txn in enumerate(group['transactions']):
                     report_content += f"  Transaction {i+1}:\n"
                     report_content += f"    Account ID: {txn['account_id']}\n"
+                    report_content += f"    Duplicate ID: {txn.get('duplicate_id', 'N/A')}\n"
                     report_content += f"    Amount: ₦{txn['debit_amount']:,.2f}\n"
                     report_content += f"    Date: {txn['date']}\n"
                     report_content += f"    Beneficiary: {txn['beneficiary']}\n"
@@ -522,6 +526,7 @@ def main():
                                 for j, transaction in enumerate(group.get('transactions', [])):
                                     st.write(f"**Transaction {j+1}:**")
                                     st.write(f"- **Account ID:** {transaction.get('account_id', 'Unknown')}")
+                                    st.write(f"- **Duplicate ID:** {transaction.get('duplicate_id', 'N/A')}")
                                     st.write(f"- Amount: ₦{transaction.get('debit_amount', 0):,.2f}")
                                     st.write(f"- Beneficiary: {transaction.get('beneficiary', 'N/A')}")
                                     st.write(f"- Date: {transaction.get('date', 'N/A')}")
